@@ -4,6 +4,10 @@ ToDo: write readme.
 for now the explanation is here:
 http://www.g3gg0.de/wordpress/arduino/attiny85-a-simple-crossfire-usb-adapter/
 
+Important hint:
+PB1: CRSF Rx
+PB2/PB3: bridged to remap USB INT
+
 
 Original readme:
 ________________________________
