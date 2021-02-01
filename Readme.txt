@@ -1,3 +1,12 @@
+
+ToDo: write readme.
+
+for now the explanation is here:
+http://www.g3gg0.de/wordpress/arduino/attiny85-a-simple-crossfire-usb-adapter/
+
+
+Original readme:
+________________________________
 This is the Readme file to Objective Development's firmware-only USB driver
 for Atmel AVR microcontrollers. For more information please visit
 http://www.obdev.at/vusb/
