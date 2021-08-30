@@ -35,10 +35,7 @@ volatile uint8_t receiveLength = 0;
 volatile uint8_t validRcData = 0;
 volatile uint8_t receivedRcData[RX_BUFFER_SIZE];
 volatile uint8_t receivedLinkData[RX_BUFFER_SIZE];
-uint8_t receivedDataTemp[RX_BUFFER_SIZE];
-uint8_t report[16];
-
-
+volatile uint8_t report[16];
 volatile uint16_t channelValues[CHANNELS];
 volatile uint16_t framesReceived = 0;
 volatile uint16_t lastFrameNumber = 0;
@@ -201,6 +198,7 @@ ISR(PCINT0_vect)
         if(receiveLength == 0x18)
         {
           validRcData = 1;
+          PCMSK &= ~(1 << PCINT0);
           framesReceived++;
         }
         state = STATE_WAIT_SYNC;
@@ -258,121 +256,114 @@ void loop()
     case 0:
       if(millis() > 1000)
       {
+        /* normal state, handle CRSF interrupts */
+        PCMSK |= (1 << PCINT0);
         state = 1;
       }
       return;
 
     case 1:
-      /* normal state, handle CRSF interrupts */
-      PCMSK |= (1 << PCINT0);
-      
-      if(validRcData)
+      /* make sure at least every 50ms a transfer happens */
+      if(currentTime - lastTransfer > 10)
       {
-        memcpy(receivedDataTemp, (const void*)receivedRcData, 0x18);
+        /* disable CRSF for now and resend last report */
+        usbSetInterrupt(&report[0], 8);
+        state = 4;
+      }
+      else if(validRcData)
+      {
         validRcData = 0;
 
         /* only handle packets with correct checksum */
-        if(crc8(receivedDataTemp, 0x18) == 0)
+        if(crc8((uint8_t*)receivedRcData, 0x18) == 0)
         {
-          uint8_t chanBits = 0;
-          uint8_t channel = 0;
-          uint32_t value = 0;
-
-          /* go through all payload bytes */
-          for(int pos = 0; pos < 22; pos++)
-          {
-            /* fetch 8 bits */
-            value |= ((uint32_t)receivedDataTemp[1 + pos]) << chanBits; 
-            chanBits += 8;
-
-            /* when we got enough (11) bits, treat this as a sample */
-            if(chanBits >= 11)
-            {
-              channelValues[channel++] = (value & 0x7FF);
-              /* keep remaining bits */
-              value >>= 11;
-              chanBits -= 11;
-            }
-          }
-          
-          /* determine (3-state) buttons from channels 4 to 10 */
-          uint16_t buttons = 0;
-          for(int pos = 0; pos < 6; pos++)
-          {
-            uint8_t value = getConverted(4+pos);
-            uint16_t bitVal1 = 1<<(2*pos);
-            uint16_t bitVal2 = 1<<(2*pos+1);
-        
-            if(value >= 0xC0)
-            {
-              buttons |= bitVal2;
-            }
-            else if(value >= 0x40)
-            {
-              buttons |= bitVal1;
-            }
-          }
-/*
-          report[0] = getConverted(0);
-          report[1] = getConverted(1);
-          report[2] = getConverted(2);
-          report[3] = getConverted(3);
-          report[4] = getConverted(10);
-          report[5] = getConverted(11);
-          report[6] = (byte)receivedLinkData[0];
-          report[7] = (byte)receivedLinkData[1];
-          report[8] = (byte)receivedLinkData[2];
-          report[9] = (byte)receivedLinkData[3];
-          report[10] = (byte)receivedLinkData[4];
-          report[11] = (byte)receivedLinkData[5] << 4;
-          report[12] = (byte)receivedLinkData[6] << 3;
-          report[13] = (byte)receivedLinkData[7];
-          */
-          report[0] = getConverted(0);
-          report[1] = getConverted(1);
-          report[2] = getConverted(2);
-          report[3] = getConverted(3);
-          report[4] = getConverted(4);
-          report[5] = getConverted(5);
-          report[6] = getConverted(6);
-          report[7] = getConverted(7);
-          report[8] = getConverted(8);
-          report[9] = getConverted(9);
-          report[10] = getConverted(10);
-          report[11] = getConverted(11);
-          report[12] = (byte)receivedLinkData[6] << 3;
-          report[13] = (byte)receivedLinkData[7];
-          report[14] = (byte) (buttons);
-          report[15] = (byte) (buttons >> 8);
-
-          /* we built the frame to send, set INT data and disable CRSF reception */
-          PCMSK &= ~(1 << PCINT0);
-          usbSetInterrupt(report, 8);
+          /* CRC correct, do another loop and then parse content */
           state = 2;
         }
-      }
-
-      /* make sure at least every 50ms a transfer happens */
-      if(currentTime - lastTransfer > 50)
-      {
-        /* disable CRSF for now */
-        PCMSK &= ~(1 << PCINT0);
-        usbSetInterrupt(report, 8);
-        state = 2;
       }
       break;
 
     case 2:
+    {
+      uint8_t chanBits = 0;
+      uint8_t channel = 0;
+      uint32_t value = 0;
+
+      /* go through all payload bytes */
+      for(int pos = 0; pos < 22; pos++)
+      {
+        /* fetch 8 bits */
+        value |= ((uint32_t)receivedRcData[1 + pos]) << chanBits; 
+        chanBits += 8;
+
+        /* when we got enough (11) bits, treat this as a sample */
+        if(chanBits >= 11)
+        {
+          channelValues[channel++] = (value & 0x7FF);
+          /* keep remaining bits */
+          value >>= 11;
+          chanBits -= 11;
+        }
+      }
+      
+      /* content parsed, another loop and then build packet */
+      state = 3;
+      break;
+    }
+
+    case 3:
+    {
+      /* determine (3-state) buttons from channels 4 to 10 */
+      uint16_t buttons = 0;
+      for(int pos = 0; pos < 6; pos++)
+      {
+        uint8_t value = getConverted(4+pos);
+        uint16_t bitVal1 = 1<<(2*pos);
+        uint16_t bitVal2 = 1<<(2*pos+1);
+    
+        if(value >= 0xC0)
+        {
+          buttons |= bitVal2;
+        }
+        else if(value >= 0x40)
+        {
+          buttons |= bitVal1;
+        }
+      }
+      
+      report[0] = getConverted(0);
+      report[1] = getConverted(1);
+      report[2] = getConverted(2);
+      report[3] = getConverted(3);
+      report[4] = getConverted(4);
+      report[5] = getConverted(5);
+      report[6] = getConverted(6);
+      report[7] = getConverted(7);
+      report[8] = getConverted(8);
+      report[9] = getConverted(9);
+      report[10] = getConverted(10);
+      report[11] = getConverted(11);
+      report[12] = (byte)receivedLinkData[6] << 3;
+      report[13] = (byte)receivedLinkData[7];
+      report[14] = (byte)(buttons);
+      report[15] = (byte)(buttons >> 8);
+
+      /* we built the frame to send, set INT data */
+      usbSetInterrupt(&report[0], 8);
+      state = 4;
+      break;
+    }
+
+    case 4:
       /* queue second part of our HID data in the next interrupt */
       if(usbInterruptIsReady())
       {
         usbSetInterrupt(&report[8], 8);
-        lastTransfer = currentTime;
-        state = 3;
+        state = 5;
       }
       break;
 
-    case 3:
+    case 5:
       /* when interrupt buffer is empty, make sure we receive CRSF frames again */
       if(usbInterruptIsReady())
       {
@@ -383,14 +374,4 @@ void loop()
       break;
   } 
 }
-
-
-
-
-
-
-
-
-
-
 
